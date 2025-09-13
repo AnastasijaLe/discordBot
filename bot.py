@@ -12,16 +12,19 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import tempfile
 import time
+#from dotenv import load_dotenv
+
+#load_dotenv()
 
 # ====== НАСТРОЙКА ======
 TOKEN = os.environ.get('DISCORD_TOKEN')
-GUILD_ID = int(os.environ.get('GUILD_ID', 1413812168096350280))
-CHANNEL_REPORTS_ID = int(os.environ.get('CHANNEL_REPORTS_ID', 1413817218197622795))
-CHANNEL_APPROVAL_ID = int(os.environ.get('CHANNEL_APPROVAL_ID', 1413817246152790076))
-CHANNEL_DAILY_STATS_ID = int(os.environ.get('CHANNEL_DAILY_STATS_ID', 1413882396289273996))
-CHANNEL_WEEKLY_STATS_ID = int(os.environ.get('CHANNEL_WEEKLY_STATS_ID', 1413882366375760003))
-ROLE_TEST_ID = int(os.environ.get('ROLE_TEST_ID', 1413814956121522206))
-ROLE_MAIN_ID = int(os.environ.get('ROLE_MAIN_ID', 1413815004737572956))
+GUILD_ID = int(os.environ.get('GUILD_ID'))
+CHANNEL_REPORTS_ID = int(os.environ.get('CHANNEL_REPORTS_ID'))
+CHANNEL_APPROVAL_ID = int(os.environ.get('CHANNEL_APPROVAL_ID'))
+CHANNEL_DAILY_STATS_ID = int(os.environ.get('CHANNEL_DAILY_STATS_ID'))
+CHANNEL_WEEKLY_STATS_ID = int(os.environ.get('CHANNEL_WEEKLY_STATS_ID'))
+ROLE_TEST_ID = int(os.environ.get('ROLE_TEST_ID'))
+ROLE_MAIN_ID = int(os.environ.get('ROLE_MAIN_ID'))
 DAILY_STATS_MESSAGE_ID = int(os.environ.get('DAILY_STATS_MESSAGE_ID', 0))  # 0 означает, что сообщение будет создано
 WEEKLY_STATS_MESSAGE_ID = int(os.environ.get('WEEKLY_STATS_MESSAGE_ID', 0))  # 0 означает, что сообщение будет создано
 DEFAULT_THRESHOLD = int(os.environ.get('DEFAULT_THRESHOLD', 15))
@@ -36,7 +39,8 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Инициализация базы данных
 def init_db():
-    db = sqlite3.connect('screenshots.db', check_same_thread=False)
+    db = sqlite3.connect('/mnt/data/screenshots.db', check_same_thread=False)
+    #db = sqlite3.connect('screenshots.db', check_same_thread=False)
     cursor = db.cursor()
 
     # Создаем таблицы

@@ -324,33 +324,29 @@ async def update_daily_stats():
 
 
 async def update_weekly_stats():
-    """Обновляет недельную статистику"""
+    """Обновляет недельную статистику с безопасным разбиением текста по лимиту Discord"""
     channel = bot.get_channel(CHANNEL_WEEKLY_STATS_ID)
     if not channel:
         return
-    
-    # Определяем начало недели (понедельник)
+
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
     week_start_str = week_start.isoformat()
-    
-    # Получаем всех пользователей с ролью тест
+
     guild = bot.get_guild(GUILD_ID)
     role_test = guild.get_role(ROLE_TEST_ID)
-    
+
     test_users = []
     for member in guild.members:
         if role_test in member.roles:
-            # Получаем данные из БД
             cursor.execute(
                 "SELECT screenshots_weekly, join_date, discord_join_date, days_in_faction FROM users WHERE user_id = ?",
                 (member.id,)
             )
             row = cursor.fetchone()
-            
+
             if row:
                 screens_weekly, join_date, discord_join_date, days_in_faction = row
-                # Если дата вступления в Discord не сохранена, сохраняем ее
                 if not discord_join_date:
                     discord_join_date = member.joined_at.date().isoformat() if member.joined_at else date.today().isoformat()
                     cursor.execute(
@@ -358,7 +354,6 @@ async def update_weekly_stats():
                         (discord_join_date, member.id)
                     )
             else:
-                # Если пользователя нет в БД, добавляем
                 join_date = date.today().isoformat()
                 discord_join_date = member.joined_at.date().isoformat() if member.joined_at else date.today().isoformat()
                 days_in_faction = 0
@@ -367,14 +362,13 @@ async def update_weekly_stats():
                     "INSERT INTO users (user_id, username, join_date, discord_join_date, days_in_faction, screenshots_weekly) VALUES (?, ?, ?, ?, ?, ?)",
                     (member.id, member.name, join_date, discord_join_date, days_in_faction, screens_weekly)
                 )
-            
-            # Рассчитываем количество дней в Discord
+
             if discord_join_date:
                 join_date_obj = datetime.strptime(discord_join_date, '%Y-%m-%d').date()
                 days_in_discord = (date.today() - join_date_obj).days
             else:
                 days_in_discord = 0
-            
+
             test_users.append({
                 'id': member.id,
                 'name': member.name,
@@ -382,60 +376,64 @@ async def update_weekly_stats():
                 'days_in_discord': days_in_discord,
                 'days_in_faction': days_in_faction
             })
-    
+
     db.commit()
-    
-    # Сортируем по количеству скринов
     test_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
-    
-    # Создаем embed
+
     embed = discord.Embed(
         title=f"📈 Недельная статистика (неделя с {week_start_str})",
         color=discord.Color.gold()
     )
-    
-    # Разделяем на зоны
-    green_zone = []
-    yellow_zone = []
-    red_zone = []
-    
-    for user in test_users:
-        if user['screens_weekly'] >= 10:
-            green_zone.append(user)
-        elif user['screens_weekly'] >= 5:
-            yellow_zone.append(user)
-        else:
-            red_zone.append(user)
-    
-    # Добавляем поля в embed
-    if green_zone:
-        green_text = "\n".join([f"✅ <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})" for u in green_zone])
-        embed.add_field(name="🟢 Активные", value=green_text, inline=False)
-    
-    if yellow_zone:
-        yellow_text = "\n".join([f"⚠️ <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})" for u in yellow_zone])
-        embed.add_field(name="🟡 Средний актив", value=yellow_text, inline=False)
-    
-    if red_zone:
-        red_text = "\n".join([f"❌ <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})" for u in red_zone])
-        embed.add_field(name="🔴 Маленький актив", value=red_text, inline=False)
-    
-    # Проверяем, есть ли уже сообщение за эту неделю
+
+    def chunk_text(text: str, limit: int = 1024) -> list[str]:
+        """Разбивает текст на куски по limit символов, стараясь резать по переносам"""
+        chunks = []
+        while len(text) > limit:
+            split_index = text.rfind("\n", 0, limit)
+            if split_index == -1:
+                split_index = limit
+            chunks.append(text[:split_index])
+            text = text[split_index:].lstrip("\n")
+        if text:
+            chunks.append(text)
+        return chunks
+
+    def add_zone_fields(zone_name, users, emoji):
+        if not users:
+            return
+        full_text = "\n".join(
+            f"{emoji} <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})"
+            for u in users
+        )
+        for i, chunk in enumerate(chunk_text(full_text)):
+            name = zone_name if i == 0 else f"{zone_name} (продолжение {i})"
+            embed.add_field(name=name, value=chunk, inline=False)
+
+    green_zone = [u for u in test_users if u['screens_weekly'] >= 10]
+    yellow_zone = [u for u in test_users if 5 <= u['screens_weekly'] < 10]
+    red_zone = [u for u in test_users if u['screens_weekly'] < 5]
+
+    add_zone_fields("🟢 Активные", green_zone, "✅")
+    add_zone_fields("🟡 Средний актив", yellow_zone, "⚠️")
+    add_zone_fields("🔴 Маленький актив", red_zone, "❌")
+
     cursor.execute("SELECT message_id FROM weekly_stats WHERE week_start = ?", (week_start_str,))
     row = cursor.fetchone()
-    
+
     if row and row[0]:
         try:
             message = await channel.fetch_message(row[0])
             await message.edit(embed=embed)
         except:
-            # Если сообщение не найдено, создаем новое
             message = await channel.send(embed=embed)
             cursor.execute("UPDATE weekly_stats SET message_id = ? WHERE week_start = ?", (message.id, week_start_str))
     else:
         message = await channel.send(embed=embed)
-        cursor.execute("INSERT OR REPLACE INTO weekly_stats (week_start, message_id) VALUES (?, ?)", (week_start_str, message.id))
-    
+        cursor.execute(
+            "INSERT OR REPLACE INTO weekly_stats (week_start, message_id) VALUES (?, ?)",
+            (week_start_str, message.id)
+        )
+
     db.commit()
 
 # ========== НАПОМИНАНИЯ О НЕАКТИВНОСТИ ==========

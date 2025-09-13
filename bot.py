@@ -438,52 +438,68 @@ async def update_weekly_stats():
 
 # ========== НАПОМИНАНИЯ О НЕАКТИВНОСТИ ==========
 async def check_inactive_users():
-    """Проверяет неактивных пользователей и отправляет напоминания"""
+    """Проверяет неактивных пользователей и отправляет напоминания, включая тех, кто не отправлял скрины"""
     guild = bot.get_guild(GUILD_ID)
     role_test = guild.get_role(ROLE_TEST_ID)
     today = date.today()
-    
+
     for member in guild.members:
-        if role_test in member.roles:
-            cursor.execute(
-                "SELECT last_screenshot_date, last_reminder_date FROM users WHERE user_id = ?",
-                (member.id,)
+        if role_test not in member.roles:
+            continue
+
+        cursor.execute(
+            "SELECT last_screenshot_date, last_reminder_date, join_date FROM users WHERE user_id = ?",
+            (member.id,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            continue
+
+        last_screenshot_date_str, last_reminder_date_str, join_date_str = row
+        should_send_reminder = False
+        custom_message = None
+
+        if last_screenshot_date_str:
+            # Есть хотя бы один скрин — проверяем обычную неактивность
+            last_screenshot_date = datetime.strptime(last_screenshot_date_str, '%Y-%m-%d').date()
+            days_inactive = (today - last_screenshot_date).days
+            if days_inactive >= INACTIVE_DAYS_THRESHOLD:
+                should_send_reminder = True
+                custom_message = (
+                    f"⚠️ **Напоминание**\n"
+                    f"Вы не отправляли скриншоты уже {days_inactive} дней.\n"
+                    f"Пожалуйста, отправьте скриншоты в канал для отчётов, чтобы избежать исключения."
+                )
+        else:
+            # Нет ни одного скрина — отправляем твоё сообщение
+            should_send_reminder = True
+            custom_message = (
+                f"⚠️ **Напоминание**\n"
+                f"Вы ещё не отправили ни одного скриншота на повышение в канал <#{CHANNEL_REPORTS_ID}>.\n"
+                f"Пожалуйста, не забывайте о повышении, чтобы избежать проблем!"
             )
-            row = cursor.fetchone()
-            
-            if row:
-                last_screenshot_date_str, last_reminder_date_str = row
-                
-                if last_screenshot_date_str:
-                    last_screenshot_date = datetime.strptime(last_screenshot_date_str, '%Y-%m-%d').date()
-                    days_inactive = (today - last_screenshot_date).days
-                    
-                    # Проверяем, нужно ли отправлять напоминание
-                    should_send_reminder = False
-                    if last_reminder_date_str:
-                        last_reminder_date = datetime.strptime(last_reminder_date_str, '%Y-%m-%d').date()
-                        if (today - last_reminder_date).days >= 1:  # Не чаще 1 раза в день
-                            should_send_reminder = True
-                    else:
-                        should_send_reminder = True
-                    
-                    if days_inactive >= INACTIVE_DAYS_THRESHOLD and should_send_reminder:
-                        try:
-                            await member.send(
-                                f"⚠️ **Напоминание**\n"
-                                f"Вы не отправляли скриншоты уже {days_inactive} или больше дней.\n"
-                                f"Пожалуйста, отправьте скриншоты в канал для отчетов, чтобы избежать исключения."
-                            )
-                            # Обновляем дату последнего напоминания
-                            cursor.execute(
-                                "UPDATE users SET last_reminder_date = ? WHERE user_id = ?",
-                                (today.isoformat(), member.id)
-                            )
-                            db.commit()
-                        except discord.Forbidden:
-                            print(f"Не удалось отправить напоминание пользователю {member.name} (закрытые ЛС)")
-                        except Exception as e:
-                            print(f"Ошибка при отправке напоминания: {e}")
+
+        # Проверка интервала между напоминаниями (раз в N дней)
+        if last_reminder_date_str:
+            last_reminder_date = datetime.strptime(last_reminder_date_str, '%Y-%m-%d').date()
+            if (today - last_reminder_date).days < INACTIVE_DAYS_THRESHOLD:
+                should_send_reminder = False
+
+        if should_send_reminder and custom_message:
+            try:
+                await member.send(custom_message)
+                cursor.execute(
+                    "UPDATE users SET last_reminder_date = ? WHERE user_id = ?",
+                    (today.isoformat(), member.id)
+                )
+                db.commit()
+                print(f"📩 Напоминание отправлено {member.name}")
+            except discord.Forbidden:
+                print(f"⚠️ Не удалось отправить напоминание {member.name} (закрытые ЛС)")
+            except Exception as e:
+                print(f"❌ Ошибка при отправке напоминания {member.name}: {e}")
+
 
 # ========== СОБЫТИЯ ==========
 @bot.event

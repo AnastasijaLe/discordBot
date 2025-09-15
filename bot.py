@@ -780,8 +780,8 @@ async def handle_totals_command(message):
             days_in_discord = 0
         
         embed = discord.Embed(
-            title=f"📊 Статистика {member}",
-            description=f"**Скриншотов:** {total}\n**Дней в Discord:** {days_in_discord}",
+            title=f"📊 Статистика {member.display_name}",
+            description=f"**Пользователь:** {member.mention}\n**Скриншотов:** {total}\n**Дней в Discord:** {days_in_discord}",
             color=discord.Color.blue()
         )
         return await message.channel.send(embed=embed, delete_after=30)
@@ -802,7 +802,7 @@ async def handle_totals_command(message):
                     days_in_discord = (date.today() - datetime.strptime(discord_join_date, "%Y-%m-%d").date()).days if discord_join_date else 0
                 except ValueError:
                     days_in_discord = 0
-                lines.append(f"**{member}** — {total} скринов ({days_in_discord} дней в Discord)")
+                lines.append(f"{member.mention}: {total} скринов ({days_in_discord} дней в Discord)")
     
     if not lines:
         return await message.channel.send("Нет данных о пользователях с ролью TEST.", delete_after=10)
@@ -810,7 +810,7 @@ async def handle_totals_command(message):
     # Сортируем по количеству скриншотов (по убыванию)
     def sort_key(line):
         import re
-        match = re.search(r'— (\d+) скринов', line)
+        match = re.search(r': (\d+) скринов', line)
         return int(match.group(1)) if match else 0
     
     lines.sort(key=sort_key, reverse=True)

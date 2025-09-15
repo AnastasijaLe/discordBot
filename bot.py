@@ -189,7 +189,7 @@ class ReasonModal(discord.ui.Modal, title="Отклонение перевода
         await update_daily_stats()
         await update_weekly_stats()
 
-# ========== УЛУЧШЕННАЯ PDF ГЕНЕРАЦИЯ ==========
+# ========== УЛУЧШЕННАЯ PDF ГЕНЕРАЦИА ==========
 async def download_image(session, url, retries=3):
     """Асинхронная загрузка изображения с повторными попытками"""
     for attempt in range(retries):
@@ -569,7 +569,7 @@ async def on_member_update(before, after):
 @bot.event
 async def on_message(message):
     # Игнорируем сообщения от ботов и личные сообщения
-    if message.author.bot or isinstance(message.channel, discord.DM):
+    if message.author.bot or isinstance(message.channel, discord.DMChannel):
         return
     
     # Обработка команд через ключевые слова

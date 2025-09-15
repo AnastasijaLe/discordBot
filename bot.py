@@ -755,9 +755,16 @@ async def before_daily_tasks():
 # ========== ОБРАБОТКА КОМАНД ==========
 async def handle_totals_command(message):
     """Обрабатывает команду totals"""
+    guild = message.guild
+    role_test = guild.get_role(ROLE_TEST_ID)
+    
     # Проверяем, упоминается ли конкретный пользователь
     if message.mentions:
         member = message.mentions[0]
+        # Проверяем, что у пользователя есть роль TEST
+        if role_test not in member.roles:
+            return await message.channel.send(f"❌ Пользователь {member.mention} не имеет роли TEST.", delete_after=10)
+        
         cursor.execute(
             "SELECT screenshots_total, discord_join_date FROM users WHERE user_id = ?",
             (member.id,)
@@ -773,28 +780,40 @@ async def handle_totals_command(message):
             days_in_discord = 0
         
         embed = discord.Embed(
-            title=f"📊 Статистика {member.display_name}",
+            title=f"📊 Статистика {member}",
             description=f"**Скриншотов:** {total}\n**Дней в Discord:** {days_in_discord}",
             color=discord.Color.blue()
         )
         return await message.channel.send(embed=embed, delete_after=30)
     
-    # Показываем статистику всех пользователей
-    cursor.execute(
-        "SELECT user_id, username, screenshots_total, discord_join_date FROM users ORDER BY screenshots_total DESC"
-    )
-    rows = cursor.fetchall()
-    
-    if not rows:
-        return await message.channel.send("Нет данных о пользователях.", delete_after=10)
-    
+    # Показываем статистику только пользователей с ролью TEST
     lines = []
-    for user_id, username, total, discord_join_date in rows:
-        try:
-            days_in_discord = (date.today() - datetime.strptime(discord_join_date, "%Y-%m-%d").date()).days if discord_join_date else 0
-        except ValueError:
-            days_in_discord = 0
-        lines.append(f"**{username}** — {total} скринов ({days_in_discord} дней в Discord)")
+    for member in guild.members:
+        if role_test in member.roles:
+            cursor.execute(
+                "SELECT screenshots_total, discord_join_date FROM users WHERE user_id = ?",
+                (member.id,)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                total, discord_join_date = row
+                try:
+                    days_in_discord = (date.today() - datetime.strptime(discord_join_date, "%Y-%m-%d").date()).days if discord_join_date else 0
+                except ValueError:
+                    days_in_discord = 0
+                lines.append(f"**{member}** — {total} скринов ({days_in_discord} дней в Discord)")
+    
+    if not lines:
+        return await message.channel.send("Нет данных о пользователях с ролью TEST.", delete_after=10)
+    
+    # Сортируем по количеству скриншотов (по убыванию)
+    def sort_key(line):
+        import re
+        match = re.search(r'— (\d+) скринов', line)
+        return int(match.group(1)) if match else 0
+    
+    lines.sort(key=sort_key, reverse=True)
     
     # Разбиваем на страницы
     pages = []
@@ -809,7 +828,7 @@ async def handle_totals_command(message):
     
     view = TotalsPaginator(pages)
     embed = discord.Embed(
-        title=f"📊 Общая статистика всех пользователей (стр. 1/{len(pages)})",
+        title=f"📊 Статистика пользователей с ролью TEST (стр. 1/{len(pages)})",
         description=pages[0],
         color=discord.Color.blue()
     )

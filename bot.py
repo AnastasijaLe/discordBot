@@ -12,6 +12,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import tempfile
 import time
+import aiofiles
 
 # ====== НАСТРОЙКА ======
 TOKEN = os.environ.get('DISCORD_TOKEN')
@@ -36,8 +37,11 @@ intents.members = True
 # Убираем префикс команд и используем проверку сообщений
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+SAVE_DIR = "/mnt/data/screenshots"
+
 # Инициализация базы данных
 def init_db():
+    os.makedirs(SAVE_DIR, exist_ok=True)
     db = sqlite3.connect('/mnt/data/screenshots.db', check_same_thread=False)
     cursor = db.cursor()
     
@@ -64,7 +68,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         message_id INTEGER,
-        url TEXT,
+        path TEXT,
         date TEXT,
         FOREIGN KEY (user_id) REFERENCES users (user_id)
     )
@@ -89,6 +93,30 @@ def init_db():
 
 # Инициализация базы данных
 db, cursor = init_db()
+
+async def save_attachment(attachment, user_id):
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    filename = f"{user_id}_{attachment.id}.png"
+    path = os.path.join(SAVE_DIR, filename)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(attachment.url) as resp:
+            if resp.status == 200:
+                async with aiofiles.open(path, mode='wb') as f:
+                    await f.write(await resp.read())
+                return path
+    return None
+
+def delete_user_files(user_id):
+    cursor.execute("SELECT path FROM screenshots WHERE user_id = ?", (user_id,))
+    for row in cursor.fetchall():
+        file_path = row[0]
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить файл {file_path}: {e}")
+    cursor.execute("DELETE FROM screenshots WHERE user_id = ?", (user_id,))
+    db.commit()
 
 # ========== КНОПКИ ПОДТВЕРЖДЕНИЯ / ОТКАЗА ==========
 class ApprovalButtons(discord.ui.View):
@@ -164,7 +192,7 @@ class ReasonModal(discord.ui.Modal, title="Отклонение перевода
             "UPDATE users SET required_screens = ?, screenshots_total = 0, screenshots_daily = 0, screenshots_weekly = 0 WHERE user_id = ?",
             (required, self.target_user_id)
         )
-        cursor.execute("DELETE FROM screenshots WHERE user_id = ?", (self.target_user_id,))
+        delete_user_files(self.target_user_id)
         db.commit()
         
         try:
@@ -190,64 +218,48 @@ class ReasonModal(discord.ui.Modal, title="Отклонение перевода
         await update_weekly_stats()
 
 # ========== УЛУЧШЕННАЯ PDF ГЕНЕРАЦИА ==========
-async def download_image(session, url, retries=3):
-    """Асинхронная загрузка изображения с повторными попытками"""
-    for attempt in range(retries):
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                if response.status == 200:
-                    return await response.read()
-                else:
-                    print(f"❌ Ошибка загрузки {url}: статус {response.status}")
-        except Exception as e:
-            print(f"❌ Попытка {attempt + 1} ошибка загрузки {url}: {e}")
-            await asyncio.sleep(1)
-    return None
-
-async def generate_pdf(user_id: int, screenshots: list[str]) -> str:
+async def generate_pdf(user_id: int, paths: list[str]) -> str:
     """Создаёт PDF со скриншотами и возвращает путь к файлу"""
     pdf_path = f"screenshots_{user_id}_{int(time.time())}.pdf"
     c = canvas.Canvas(pdf_path, pagesize=landscape(A4))
     width, height = landscape(A4)
     
-    print(f"🔧 Начинаем генерацию PDF для пользователя {user_id} с {len(screenshots)} скринами")
+    print(f"🔧 Начинаем генерацию PDF для пользователя {user_id} с {len(paths)} скринами")
     successful_images = 0
     
-    async with aiohttp.ClientSession() as session:
-        for i, url in enumerate(screenshots[:MAX_PDF_IMAGES], start=1):
-            try:
-                print(f"📥 Загружаем изображение {i}/{len(screenshots)}")
-                image_data = await download_image(session, url)
-                if not image_data:
-                    print(f"❌ Не удалось загрузить изображение {i}")
-                    continue
-                
-                # Используем временный файл для обработки
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
-                    temp_path = temp_file.name
-                    try:
-                        # Открываем и обрабатываем изображение
-                        img = Image.open(BytesIO(image_data))
-                        # Конвертируем в RGB если нужно
-                        if img.mode in ("RGBA", "P"):
-                            img = img.convert("RGB")
-                        # Сохраняем во временный файл
-                        img.save(temp_path, "JPEG", quality=85)
-                        
-                        # Добавляем в PDF
-                        c.drawImage(temp_path, 0, 0, width, height, preserveAspectRatio=True)
-                        c.showPage()
-                        successful_images += 1
-                        print(f"✅ Добавлено изображение {i} в PDF")
-                    finally:
-                        # Удаляем временный файл
-                        try:
-                            os.unlink(temp_path)
-                        except:
-                            pass
-            except Exception as e:
-                print(f"❌ Ошибка обработки изображения {i}: {e}")
+    for i, path in enumerate(paths[:MAX_PDF_IMAGES], start=1):
+        try:
+            if not os.path.exists(path):
+                print(f"❌ Файл не найден: {path}")
                 continue
+                
+            # Открываем и обрабатываем изображение
+            with open(path, 'rb') as f:
+                image_data = f.read()
+            
+            img = Image.open(BytesIO(image_data))
+            # Конвертируем в RGB если нужно
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            
+            # Используем временный файл для JPEG
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
+                temp_path = temp_file.name
+                try:
+                    img.save(temp_path, "JPEG", quality=85)
+                    # Добавляем в PDF
+                    c.drawImage(temp_path, 0, 0, width, height, preserveAspectRatio=True)
+                    c.showPage()
+                    successful_images += 1
+                    print(f"✅ Добавлено изображение {i} в PDF")
+                finally:
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+        except Exception as e:
+            print(f"❌ Ошибка обработки изображения {i} ({path}): {e}")
+            continue
     
     if successful_images > 0:
         c.save()
@@ -562,9 +574,19 @@ async def on_member_update(before, after):
         row = cursor.fetchone()
         if row and row[0] == 0:
             cursor.execute("DELETE FROM users WHERE user_id = ?", (after.id,))
-            cursor.execute("DELETE FROM screenshots WHERE user_id = ?", (after.id,))
+            delete_user_files(after.id)
             db.commit()
             await update_weekly_stats()
+
+@bot.event
+async def on_member_remove(member):
+    role_test = member.guild.get_role(ROLE_TEST_ID)
+    if role_test in member.roles:
+        cursor.execute("DELETE FROM users WHERE user_id = ?", (member.id,))
+        delete_user_files(member.id)
+        db.commit()
+        await update_daily_stats()
+        await update_weekly_stats()
 
 @bot.event
 async def on_message(message):
@@ -620,11 +642,13 @@ async def handle_screenshots(message):
     screenshot_count = 0
     for attachment in message.attachments:
         if attachment.content_type and attachment.content_type.startswith('image/'):
-            cursor.execute(
-                "INSERT INTO screenshots (user_id, message_id, url, date) VALUES (?, ?, ?, ?)",
-                (user_id, message.id, attachment.url, today)
-            )
-            screenshot_count += 1
+            path = await save_attachment(attachment, user_id)
+            if path:
+                cursor.execute(
+                    "INSERT INTO screenshots (user_id, message_id, path, date) VALUES (?, ?, ?, ?)",
+                    (user_id, message.id, path, today)
+                )
+                screenshot_count += 1
     
     if screenshot_count == 0:
         return
@@ -659,15 +683,15 @@ async def handle_screenshots(message):
     if row:
         total, required = row
         if (required and total >= required) or (not required and total >= DEFAULT_THRESHOLD):
-            cursor.execute("SELECT url FROM screenshots WHERE user_id = ? ORDER BY date DESC, id DESC", (user_id,))
-            urls = [row[0] for row in cursor.fetchall()]
+            cursor.execute("SELECT path FROM screenshots WHERE user_id = ? ORDER BY date DESC, id DESC", (user_id,))
+            paths = [row[0] for row in cursor.fetchall()]
             # Запускаем генерацию PDF в фоновой задаче
-            asyncio.create_task(process_approval_request(message.author, total, user_id, urls))
+            asyncio.create_task(process_approval_request(message.author, total, user_id, paths))
 
-async def process_approval_request(user, total_screens, user_id, urls):
+async def process_approval_request(user, total_screens, user_id, paths):
     """Обрабатывает запрос на подтверждение в фоновом режиме"""
     try:
-        pdf_path = await generate_pdf(user_id, urls)
+        pdf_path = await generate_pdf(user_id, paths)
         if pdf_path:
             await send_approval_request(user, total_screens, pdf_path)
         else:
@@ -863,6 +887,17 @@ class TotalsPaginator(discord.ui.View):
             await self.update_message(interaction)
         else:
             await interaction.response.defer()
+
+@bot.command(name='delete_user')
+@commands.has_permissions(administrator=True)
+async def delete_user_command(ctx, member: discord.Member):
+    user_id = member.id
+    cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+    delete_user_files(user_id)
+    db.commit()
+    await update_daily_stats()
+    await update_weekly_stats()
+    await ctx.send(f"✅ Данные и скриншоты пользователя {member.mention} удалены из базы.")
 
 # ========== СТАРТ ==========
 if __name__ == "__main__":

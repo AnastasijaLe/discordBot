@@ -264,7 +264,7 @@ async def generate_pdf(user_id: int, screenshots: list[str]) -> str:
 
 # ========== СТАТИСТИКА ==========
 async def update_daily_stats():
-    """Обновляет дневную статистику"""
+    """Обновляет дневную статистику и удаляет старые сообщения из канала"""
     channel = bot.get_channel(CHANNEL_DAILY_STATS_ID)
     if not channel:
         return
@@ -272,8 +272,8 @@ async def update_daily_stats():
     today = date.today().isoformat()
     guild = bot.get_guild(GUILD_ID)
     role_test = guild.get_role(ROLE_TEST_ID)
-    
-    # Собираем всех пользователей с ролью тест
+
+    # Собираем данные по пользователям
     users_data = []
     for member in guild.members:
         if role_test in member.roles:
@@ -282,44 +282,49 @@ async def update_daily_stats():
                 (member.id,)
             )
             row = cursor.fetchone()
-            if row:
-                screenshots_daily = row[0]
-            else:
-                screenshots_daily = 0
+            screenshots_daily = row[0] if row else 0
             users_data.append((member, screenshots_daily))
-    
-    # Сортируем по количеству скринов
+
     users_data.sort(key=lambda x: x[1], reverse=True)
-    
+
     embed = discord.Embed(
         title=f"📊 Статистика за сегодня ({today})",
         color=discord.Color.blue()
     )
-    
-    if users_data:
-        stats_text = ""
-        for member, screens_daily in users_data:
-            stats_text += f"**{member.mention}**: {screens_daily} скринов\n"
-        embed.description = stats_text
-    else:
-        embed.description = "Сегодня ещё никто не отправлял скрины"
-    
-    # Проверяем, есть ли уже сообщение за сегодня
+    embed.description = (
+        "\n".join(f"**{member.mention}**: {screens_daily} скринов" for member, screens_daily in users_data)
+        if users_data else "Сегодня ещё никто не отправлял скрины"
+    )
+
+    # === Находим и удаляем старые сообщения, но не трогаем базу ===
+    cursor.execute("SELECT date, message_id FROM daily_stats ORDER BY date DESC")
+    all_rows = cursor.fetchall()
+
+    if len(all_rows) > 5:  # Если больше 5 дней есть сообщения
+        for old_date, old_message_id in all_rows[5:]:  # Все, кроме последних 5
+            try:
+                old_msg = await channel.fetch_message(old_message_id)
+                await old_msg.delete()
+            except discord.NotFound:
+                pass  # Сообщение уже удалено вручную — игнорируем
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить старое сообщение {old_message_id}: {e}")
+
+    # === Обновляем или создаем сообщение за сегодня ===
     cursor.execute("SELECT message_id FROM daily_stats WHERE date = ?", (today,))
     row = cursor.fetchone()
-    
+
     if row and row[0]:
         try:
             message = await channel.fetch_message(row[0])
             await message.edit(embed=embed)
-        except:
-            # Если сообщение не найдено, создаем новое
+        except discord.NotFound:
             message = await channel.send(embed=embed)
             cursor.execute("UPDATE daily_stats SET message_id = ? WHERE date = ?", (message.id, today))
     else:
         message = await channel.send(embed=embed)
         cursor.execute("INSERT OR REPLACE INTO daily_stats (date, message_id) VALUES (?, ?)", (today, message.id))
-    
+
     db.commit()
 
 
@@ -435,6 +440,20 @@ async def update_weekly_stats():
         )
 
     db.commit()
+
+    # === Удаляем старые сообщения из канала, но не трогаем базу ===
+    cursor.execute("SELECT week_start, message_id FROM weekly_stats ORDER BY week_start DESC")
+    all_rows = cursor.fetchall()
+    if len(all_rows) > 2:
+        for old_week, old_message_id in all_rows[2:]:
+            try:
+                old_msg = await channel.fetch_message(old_message_id)
+                await old_msg.delete()
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить старое недельное сообщение {old_message_id}: {e}")
+
 
 # ========== НАПОМИНАНИЯ О НЕАКТИВНОСТИ ==========
 async def check_inactive_users():
@@ -572,9 +591,13 @@ async def on_message(message):
     # Обновляем имя пользователя и дату вступления в Discord
     discord_join_date = message.author.joined_at.date().isoformat() if message.author.joined_at else date.today().isoformat()
     cursor.execute(
+        "INSERT OR IGNORE INTO users (user_id, username, discord_join_date) VALUES (?, ?, ?)",
+        (user_id, username, discord_join_date)
+    )
+    cursor.execute(
         "UPDATE users SET username = ?, discord_join_date = ? WHERE user_id = ?",
         (username, discord_join_date, user_id)
-    )
+    )   
     
     # Добавляем скриншоты
     screenshot_count = 0
@@ -675,6 +698,7 @@ async def send_approval_request(user, total_screens, pdf_path):
 # ========== ТАСКИ ==========
 @tasks.loop(hours=24)
 async def daily_tasks():
+    print(f"⏰ daily_tasks запущен: {datetime.now().isoformat()}")
     """Ежедневные задачи"""
     cursor.execute("UPDATE users SET screenshots_daily = 0")
     
@@ -688,6 +712,11 @@ async def daily_tasks():
                 (member.id,)
             )
     
+    # === СБРОС НЕДЕЛЬНОЙ СТАТИСТИКИ ПО ПОНЕДЕЛЬНИКАМ ===
+    today = date.today()
+    if today.weekday() == 0:  # Понедельник
+        cursor.execute("UPDATE users SET screenshots_weekly = 0")
+    
     db.commit()
     await update_daily_stats()
     await update_weekly_stats()
@@ -700,9 +729,11 @@ async def inactive_check():
 async def before_daily_tasks():
     await bot.wait_until_ready()
     now = datetime.now()
-    if now.hour > 0 or now.minute > 0:
-        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        await discord.utils.sleep_until(next_run)
+    # всегда считаем следующее обновление на ближайшую полночь
+    next_run = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if next_run <= now:
+        next_run += timedelta(days=1)
+    await discord.utils.sleep_until(next_run)
 
 # ========== КОМАНДЫ ==========
 @bot.command()
@@ -718,6 +749,94 @@ async def fix_dates(ctx):
     """Исправляет даты вступления в Discord для всех пользователей"""
     await initialize_discord_join_dates()
     await ctx.send("✅ Даты вступления в Discord обновлены!")
+
+class TotalsPaginator(discord.ui.View):
+    def __init__(self, pages):
+        super().__init__(timeout=120)  # кнопки живут 2 минуты
+        self.pages = pages
+        self.current_page = 0
+
+    async def update_message(self, interaction):
+        embed = discord.Embed(
+            title=f"📊 Общая статистика (стр. {self.current_page + 1}/{len(self.pages)}) — листай ⬅️➡️",
+            description=self.pages[self.current_page],
+            color=discord.Color.blue()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+            await self.update_message(interaction)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < len(self.pages) - 1:
+            self.current_page += 1
+            await self.update_message(interaction)
+        else:
+            await interaction.response.defer()
+
+@bot.command()
+async def totals(ctx, member: discord.Member = None):
+    """Показывает общее количество скринов (указанного пользователя или всех)"""
+    if member:
+        cursor.execute(
+            "SELECT screenshots_total, discord_join_date FROM users WHERE user_id = ?", (member.id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return await ctx.send(f"❌ Пользователь {member.mention} не найден в базе.")
+        
+        total, discord_join_date = row
+        try:
+            days_in_discord = (date.today() - datetime.strptime(discord_join_date, "%Y-%m-%d").date()).days if discord_join_date else 0
+        except ValueError:
+            days_in_discord = 0
+
+        embed = discord.Embed(
+            title=f"📊 Статистика {member.display_name}",
+            description=f"**Скриншотов:** {total}\n**Дней в Discord:** {days_in_discord}",
+            color=discord.Color.blue()
+        )
+        return await ctx.send(embed=embed)
+
+    cursor.execute(
+        "SELECT user_id, username, screenshots_total, discord_join_date FROM users ORDER BY screenshots_total DESC"
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return await ctx.send("Нет данных о пользователях.")
+
+    lines = []
+    for user_id, username, total, discord_join_date in rows:
+        try:
+            days_in_discord = (date.today() - datetime.strptime(discord_join_date, "%Y-%m-%d").date()).days if discord_join_date else 0
+        except ValueError:
+            days_in_discord = 0
+        lines.append(f"**{username}** — {total} скринов ({days_in_discord} дней в Discord)")
+
+    # Разбиваем на страницы
+    pages = []
+    current_page = ""
+    for line in lines:
+        if len(current_page) + len(line) + 1 > 4000:
+            pages.append(current_page)
+            current_page = ""
+        current_page += line + "\n"
+    if current_page:
+        pages.append(current_page)
+
+    view = TotalsPaginator(pages)
+    embed = discord.Embed(
+        title=f"📊 Общая статистика всех пользователей (стр. 1/{len(pages)})",
+        description=pages[0],
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed, view=view)
 
 # ========== СТАРТ ==========
 if __name__ == "__main__":

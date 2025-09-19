@@ -23,11 +23,15 @@ CHANNEL_DAILY_STATS_ID = int(os.environ.get('CHANNEL_DAILY_STATS_ID'))
 CHANNEL_WEEKLY_STATS_ID = int(os.environ.get('CHANNEL_WEEKLY_STATS_ID'))
 ROLE_TEST_ID = int(os.environ.get('ROLE_TEST_ID'))
 ROLE_MAIN_ID = int(os.environ.get('ROLE_MAIN_ID'))
+ROLE_REC_ID = int(os.environ.get('ROLE_REC_ID'))
+ROLE_HIGH_ID = int(os.environ.get('ROLE_HIGH_ID'))
+ROLE_TIR3_ID = int(os.environ.get('ROLE_TIR3_ID'))
 DAILY_STATS_MESSAGE_ID = int(os.environ.get('DAILY_STATS_MESSAGE_ID', 0))
 WEEKLY_STATS_MESSAGE_ID = int(os.environ.get('WEEKLY_STATS_MESSAGE_ID', 0))
 DEFAULT_THRESHOLD = int(os.environ.get('DEFAULT_THRESHOLD', 15))
 INACTIVE_DAYS_THRESHOLD = int(os.environ.get('INACTIVE_DAYS_THRESHOLD', 3))
 MAX_PDF_IMAGES = int(os.environ.get('MAX_PDF_IMAGES', 50))
+
 
 # Настройка бота и БД
 intents = discord.Intents.default()
@@ -130,12 +134,14 @@ class ApprovalButtons(discord.ui.View):
         target_user = guild.get_member(self.target_user_id)
         role_test = guild.get_role(ROLE_TEST_ID)
         role_main = guild.get_role(ROLE_MAIN_ID)
+        role_tir3 = guild.get_role(ROLE_TIR3_ID)
         
         if not target_user:
             return await interaction.response.send_message("Пользователь не найден.", ephemeral=True)
         
-        if role_main:
-            await target_user.add_roles(role_main)
+        if role_main or role_tir3:
+            roles_to_add = [r for r in (role_main, role_tir3) if r]
+            await target_user.add_roles(*roles_to_add)
         if role_test:
             await target_user.remove_roles(role_test)
         
@@ -703,6 +709,11 @@ async def process_approval_request(user, total_screens, user_id, paths):
 async def send_approval_request_without_pdf(user, total_screens):
     """Отправляет заявку без PDF файла"""
     channel_approval = bot.get_channel(CHANNEL_APPROVAL_ID)
+    # 🔔 Получаем роли для упоминания
+    guild = channel_approval.guild
+    role_rec = guild.get_role(ROLE_REC_ID)
+    role_high = guild.get_role(ROLE_HIGH_ID)
+    mentions = " ".join([r.mention for r in (role_rec, role_high) if r])
     embed = discord.Embed(
         title="🎯 Запрос на перевод игрока (БЕЗ PDF)",
         description=f"Игрок {user.mention} ({user}) отправил {total_screens} скриншотов.\n\n⚠️ **Не удалось сгенерировать PDF файл!**",
@@ -710,11 +721,15 @@ async def send_approval_request_without_pdf(user, total_screens):
     )
     embed.set_thumbnail(url=user.avatar.url)
     view = ApprovalButtons(user.id)
-    await channel_approval.send(embed=embed, view=view)
+    await channel_approval.send(content=mentions, embed=embed, view=view)
 
 async def send_approval_request(user, total_screens, pdf_path):
     """Отправляет заявку с PDF файлом"""
     channel_approval = bot.get_channel(CHANNEL_APPROVAL_ID)
+    guild = channel_approval.guild
+    role_rec = guild.get_role(ROLE_REC_ID)
+    role_high = guild.get_role(ROLE_HIGH_ID)
+    mentions = " ".join([r.mention for r in (role_rec, role_high) if r])
     embed = discord.Embed(
         title="🎯 Запрос на перевод игрока",
         description=f"Игрок {user.mention} ({user}) отправил {total_screens} скриншотов.",
@@ -726,9 +741,9 @@ async def send_approval_request(user, total_screens, pdf_path):
     # Проверяем размер файла
     file_size = os.path.getsize(pdf_path) / (1024 * 1024)
     if file_size > 25:
-        await channel_approval.send(embed=embed, view=view)
+        await channel_approval.send(content=mentions, embed=embed, view=view)
     else:
-        await channel_approval.send(embed=embed, view=view, file=discord.File(pdf_path))
+        await channel_approval.send(content=mentions, embed=embed, view=view, file=discord.File(pdf_path))
     
     # Удаляем временный PDF файл
     try:

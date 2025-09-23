@@ -67,16 +67,17 @@ def init_db():
     
     # Таблица для пользователей с ролью MAIN
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users_main (
+    DROP TABLE IF EXISTS users_main;
+    CREATE TABLE users_main (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
-        screenshots_weekly_main INTEGER DEFAULT 0,
+        screenshots_total INTEGER DEFAULT 0,
+        screenshots_weekly INTEGER DEFAULT 0,
         last_screenshot_date TEXT,
-        join_date TEXT,
         discord_join_date TEXT,
         days_in_faction INTEGER DEFAULT 0,
         last_reminder_date TEXT
-    )
+    );
     ''')
     
     # Таблица для скриншотов (только для TEST)

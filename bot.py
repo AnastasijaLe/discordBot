@@ -30,7 +30,7 @@ WEEKLY_STATS_MESSAGE_ID = int(os.environ.get('WEEKLY_STATS_MESSAGE_ID', 0))
 DEFAULT_THRESHOLD = int(os.environ.get('DEFAULT_THRESHOLD', 15))
 INACTIVE_DAYS_THRESHOLD = int(os.environ.get('INACTIVE_DAYS_THRESHOLD', 3))
 MAX_PDF_IMAGES = int(os.environ.get('MAX_PDF_IMAGES', 50))
-CHANNEL_REPORTS_ID = int(os.environ.get('CHANNEL_REPORTS_ID'))  # Предполагается, что это ID канала для отчетов
+CHANNEL_REPORTS_ID = int(os.environ.get('CHANNEL_REPORTS_ID'))
 
 # Настройка бота и БД
 intents = discord.Intents.default()
@@ -47,7 +47,6 @@ def init_db():
     db = sqlite3.connect('/mnt/data/screenshots.db', check_same_thread=False)
     cursor = db.cursor()
     
-    # Таблица для пользователей с ролью TEST
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -64,11 +63,9 @@ def init_db():
     )
     ''')
     
-    # Таблица для пользователей с ролью MAIN
     cursor.execute('''
         DROP TABLE IF EXISTS users_main;
-    '''
-    )
+    ''')
     cursor.execute('''
         CREATE TABLE users_main (
         user_id INTEGER PRIMARY KEY,
@@ -83,7 +80,6 @@ def init_db():
     );
     ''')
     
-    # Таблица для скриншотов (только для TEST)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS screenshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +91,6 @@ def init_db():
     )
     ''')
     
-    # Таблица для недельной статистики TEST
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS weekly_stats (
         week_start TEXT PRIMARY KEY,
@@ -103,14 +98,13 @@ def init_db():
     )
     ''')
     
-    # Таблица для недельной статистики MAIN
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS weekly_stats_main (
         week_start TEXT PRIMARY KEY,
         message_id INTEGER
     )
     ''')
-
+    
     cursor.execute('''
     DROP TABLE IF EXISTS daily_stats;
     ''')
@@ -169,7 +163,6 @@ class ApprovalButtons(discord.ui.View):
             await target_user.remove_roles(role_test)
         
         cursor.execute("UPDATE users SET approved = 1 WHERE user_id = ?", (self.target_user_id,))
-        # Добавляем пользователя в users_main
         discord_join_date = target_user.joined_at.date().isoformat() if target_user.joined_at else date.today().isoformat()
         cursor.execute(
             "INSERT OR IGNORE INTO users_main (user_id, username, join_date, discord_join_date) VALUES (?, ?, ?, ?)",
@@ -180,7 +173,7 @@ class ApprovalButtons(discord.ui.View):
         try:
             await target_user.send("🎉 Поздравляем! Ваш перевод на **Мейн** был одобрен!")
         except discord.Forbidden:
-            pass
+            print(f"⚠️ Не удалось отправить сообщение {target_user.name} (закрытые ЛС)")
         
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.green()
@@ -224,7 +217,6 @@ class ReasonModal(discord.ui.Modal, title="Отклонение перевода
         except ValueError:
             return await interaction.response.send_message("Нужно ввести число!", ephemeral=True)
         
-        # Полный сброс скринов при отклонении
         cursor.execute(
             "UPDATE users SET required_screens = ?, screenshots_total = 0, screenshots_weekly = 0 WHERE user_id = ?",
             (required, self.target_user_id)
@@ -239,7 +231,7 @@ class ReasonModal(discord.ui.Modal, title="Отклонение перевода
                 f"**Требуется дополнительно скринов:** {required}\n"
             )
         except discord.Forbidden:
-            pass
+            print(f"⚠️ Не удалось отправить сообщение {target_user.name} (закрытые ЛС)")
         
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.red()
@@ -341,7 +333,7 @@ async def update_weekly_stats():
             
             if discord_join_date:
                 join_date_obj = datetime.strptime(discord_join_date, '%Y-%m-%d').date()
-                days_in_discord = (date.today() - join_date_obj).days
+                days_in_discord = (today - join_date_obj).days
             else:
                 days_in_discord = 0
             
@@ -457,7 +449,7 @@ async def update_weekly_stats_main():
                 )
             if discord_join_date:
                 join_date_obj = datetime.strptime(discord_join_date, '%Y-%m-%d').date()
-                days_in_discord = (date.today() - join_date_obj).days
+                days_in_discord = (today - join_date_obj).days
             else:
                 days_in_discord = 0
             main_users.append({
@@ -471,8 +463,7 @@ async def update_weekly_stats_main():
     db.commit()
     main_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
     
-    # Собираем полный текст
-    full_text = "\n".join(f"🔹 <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']}" for u in main_users)
+    full_text = "\n".join(f"🔹 <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})" for u in main_users)
     
     def chunk_text(text: str, limit: int = 4000) -> list[str]:
         chunks = []
@@ -488,7 +479,6 @@ async def update_weekly_stats_main():
     
     pages = chunk_text(full_text)
     
-    # Удаляем старое сообщение если существует
     cursor.execute("SELECT message_id FROM weekly_stats_main WHERE week_start = ?", (week_start_str,))
     row = cursor.fetchone()
     if row and row[0]:
@@ -499,7 +489,6 @@ async def update_weekly_stats_main():
             pass
     
     if pages:
-        # Создаем embed для первой страницы
         embed = discord.Embed(
             title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})" + (f" (стр. 1/{len(pages)})" if len(pages) > 1 else ""),
             description=pages[0],
@@ -510,7 +499,6 @@ async def update_weekly_stats_main():
         cursor.execute("INSERT OR REPLACE INTO weekly_stats_main (week_start, message_id) VALUES (?, ?)", (week_start_str, message.id))
         db.commit()
     
-    # Удаляем старые недельные сообщения
     cursor.execute("SELECT week_start, message_id FROM weekly_stats_main ORDER BY week_start DESC")
     all_rows = cursor.fetchall()
     
@@ -526,7 +514,7 @@ async def update_weekly_stats_main():
 
 class WeeklyStatsPaginator(discord.ui.View):
     def __init__(self, pages):
-        super().__init__(timeout=None)  # Без таймаута, так как статистика статична
+        super().__init__(timeout=None)
         self.pages = pages
         self.current_page = 0
     
@@ -689,7 +677,6 @@ async def initialize_discord_join_dates():
     for member in guild.members:
         if member.joined_at:
             discord_join_date = member.joined_at.date().isoformat()
-            # Для роли TEST
             cursor.execute(
                 "SELECT discord_join_date FROM users WHERE user_id = ?",
                 (member.id,)
@@ -700,7 +687,6 @@ async def initialize_discord_join_dates():
                     "INSERT OR REPLACE INTO users (user_id, username, discord_join_date) VALUES (?, ?, ?)",
                     (member.id, member.name, discord_join_date)
                 )
-            # Для роли MAIN
             cursor.execute(
                 "SELECT discord_join_date FROM users_main WHERE user_id = ?",
                 (member.id,)
@@ -718,7 +704,6 @@ async def on_member_update(before, after):
     role_test = after.guild.get_role(ROLE_TEST_ID)
     role_main = after.guild.get_role(ROLE_MAIN_ID)
     
-    # Обработка для TEST
     if role_test not in before.roles and role_test in after.roles:
         join_date = date.today().isoformat()
         discord_join_date = after.joined_at.date().isoformat() if after.joined_at else date.today().isoformat()
@@ -738,7 +723,6 @@ async def on_member_update(before, after):
             db.commit()
             await update_weekly_stats()
     
-    # Обработка для MAIN
     if role_main not in before.roles and role_main in after.roles:
         join_date = date.today().isoformat()
         discord_join_date = after.joined_at.date().isoformat() if after.joined_at else date.today().isoformat()
@@ -794,7 +778,7 @@ async def on_message(message):
         await message.channel.send("✅ Даты вступления в Discord обновлены!", delete_after=10)
         return
     
-    if message.channel.id == CHANNEL_REPORTS_ID:
+    if message.channel.id in [CHANNEL_REPORTS_ID, CHANNEL_MAIN_ID]:
         await handle_screenshots(message)
 
 async def handle_screenshots(message):
@@ -807,15 +791,13 @@ async def handle_screenshots(message):
     if not message.attachments:
         return
     
-    # Обновляем имя пользователя и дату вступления в Discord
     discord_join_date = message.author.joined_at.date().isoformat() if message.author.joined_at else date.today().isoformat()
     
     screenshot_count = sum(1 for attachment in message.attachments if attachment.content_type and attachment.content_type.startswith('image/'))
     if screenshot_count == 0:
         return
     
-    if role_test in message.author.roles:
-        # Обработка для TEST (с сохранением файлов)
+    if role_test in message.author.roles and message.channel.id == CHANNEL_REPORTS_ID:
         cursor.execute(
             "INSERT OR IGNORE INTO users (user_id, username, discord_join_date) VALUES (?, ?, ?)",
             (user_id, username, discord_join_date)
@@ -836,19 +818,22 @@ async def handle_screenshots(message):
         
         cursor.execute('''
         INSERT INTO users (user_id, username, screenshots_total, screenshots_weekly, last_screenshot_date)
-        VALUES (?, ?, 1, 1, ?)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             username = excluded.username,
             screenshots_total = screenshots_total + ?,
             screenshots_weekly = screenshots_weekly + ?,
             last_screenshot_date = excluded.last_screenshot_date
-        ''', (user_id, username, today, screenshot_count, screenshot_count))
+        ''', (user_id, username, screenshot_count, screenshot_count, today, screenshot_count, screenshot_count))
         
         total_screens = cursor.execute('SELECT screenshots_total FROM users WHERE user_id = ?', (user_id,)).fetchone()[0]
+        weekly_screens = cursor.execute('SELECT screenshots_weekly FROM users WHERE user_id = ?', (user_id,)).fetchone()[0]
         try:
-            await message.reply(f"📸 {message.author.mention}, скриншоты приняты! Всего скринов: {total_screens}", delete_after=10)
-        except:
-            pass
+            await message.reply(f"📸 {message.author.mention}, скриншоты приняты! Всего скринов: {total_screens}, за неделю: {weekly_screens}", delete_after=10)
+        except discord.Forbidden:
+            print(f"⚠️ Не удалось ответить {message.author.name} в канале {message.channel.id} (отсутствуют права)")
+        except Exception as e:
+            print(f"❌ Ошибка при отправке ответа {message.author.name}: {e}")
         
         cursor.execute("SELECT screenshots_total, required_screens FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
@@ -859,8 +844,7 @@ async def handle_screenshots(message):
                 paths = [row[0] for row in cursor.fetchall()]
                 asyncio.create_task(process_approval_request(message.author, total, user_id, paths))
     
-    elif role_main in message.author.roles:
-        # Обработка для MAIN (без сохранения файлов)
+    elif role_main in message.author.roles and message.channel.id == CHANNEL_MAIN_ID:
         cursor.execute(
             "INSERT OR IGNORE INTO users_main (user_id, username, discord_join_date) VALUES (?, ?, ?)",
             (user_id, username, discord_join_date)
@@ -881,10 +865,13 @@ async def handle_screenshots(message):
         ''', (user_id, username, screenshot_count, screenshot_count, today, screenshot_count, screenshot_count))
         
         total_screens = cursor.execute('SELECT screenshots_total FROM users_main WHERE user_id = ?', (user_id,)).fetchone()[0]
+        weekly_screens = cursor.execute('SELECT screenshots_weekly FROM users_main WHERE user_id = ?', (user_id,)).fetchone()[0]
         try:
-            await message.reply(f"📸 {message.author.mention}, скриншоты приняты! Всего скринов: {total_screens}", delete_after=10)
-        except:
-            pass
+            await message.reply(f"📸 {message.author.mention}, скриншоты приняты! Всего скринов: {total_screens}, за неделю: {weekly_screens}", delete_after=10)
+        except discord.Forbidden:
+            print(f"⚠️ Не удалось ответить {message.author.name} в канале {message.channel.id} (отсутствуют права)")
+        except Exception as e:
+            print(f"❌ Ошибка при отправке ответа {message.author.name}: {e}")
     
     db.commit()
     await update_weekly_stats()
@@ -949,7 +936,6 @@ async def weekly_tasks():
     role_test = guild.get_role(ROLE_TEST_ID)
     role_main = guild.get_role(ROLE_MAIN_ID)
     
-    # Обновление дней в фракции для TEST
     for member in guild.members:
         if role_test in member.roles:
             cursor.execute(
@@ -962,7 +948,6 @@ async def weekly_tasks():
                 (member.id,)
             )
     
-    # Сброс недельной статистики по понедельникам
     today = date.today()
     if today.weekday() == 0:
         cursor.execute("UPDATE users SET screenshots_weekly = 0")

@@ -67,7 +67,10 @@ def init_db():
     
     # Таблица для пользователей с ролью MAIN
     cursor.execute('''
-    DROP TABLE IF EXISTS users_main;
+        DROP TABLE IF EXISTS users_main;
+    '''
+    )
+    cursor.execute('''
     CREATE TABLE users_main (
         user_id INTEGER PRIMARY KEY,
         username TEXT,

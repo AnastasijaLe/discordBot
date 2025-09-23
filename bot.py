@@ -472,7 +472,7 @@ async def update_weekly_stats_main():
     main_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
     
     # Собираем полный текст
-    full_text = "\n".join(f"🔹 <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']}, дней в фракции: {u['days_in_faction']})" for u in main_users)
+    full_text = "\n".join(f"🔹 <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']}" for u in main_users)
     
     def chunk_text(text: str, limit: int = 4000) -> list[str]:
         chunks = []

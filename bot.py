@@ -64,9 +64,6 @@ def init_db():
     ''')
     
     cursor.execute('''
-        DROP TABLE IF EXISTS users_main;
-    ''')
-    cursor.execute('''
         CREATE TABLE users_main (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -927,6 +924,82 @@ async def send_approval_request(user, total_screens, pdf_path):
         os.remove(pdf_path)
     except:
         pass
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    # Игнорируем реакции бота
+    if user.bot:
+        return
+    if reaction.message.channel.id not in [CHANNEL_REPORTS_ID, CHANNEL_MAIN_ID]:
+        return
+    if str(reaction.emoji) != "❌":  # Или "x" если используете :x:
+        return
+    
+    try:
+        # Загружаем сообщение если нужно
+        if reaction.message.partial:
+            message = await reaction.message.fetch()
+        else:
+            message = reaction.message
+    except discord.NotFound:
+        return
+
+    author = message.author  # Кто прислал скрин
+
+    # Проверяем, что это пользователь с ролью TEST
+    guild = message.guild
+    role_test = guild.get_role(ROLE_TEST_ID)
+    role_main = guild.get_role(ROLE_MAIN_ID)
+
+    member = guild.get_member(author.id)
+    if not member or role_test not in member.roles:
+        return
+
+    # Ищем скриншот в базе по message_id
+    cursor.execute("SELECT path FROM screenshots WHERE message_id = ?", (message.id,))
+    row = cursor.fetchone()
+    if not row:
+        return
+
+    # Удаляем файл
+    file_path = row[0]
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception as e:
+            print(f"⚠️ Не удалось удалить файл {file_path}: {e}")
+
+    # Удаляем из базы
+    cursor.execute("DELETE FROM screenshots WHERE message_id = ?", (message.id,))
+
+    # Уменьшаем счетчики у TEST
+    cursor.execute('''
+        UPDATE users SET
+            screenshots_total = CASE WHEN screenshots_total > 0 THEN screenshots_total - 1 ELSE 0 END,
+            screenshots_weekly = CASE WHEN screenshots_weekly > 0 THEN screenshots_weekly - 1 ELSE 0 END
+        WHERE user_id = ?
+    ''', (author.id,))
+
+    # Уменьшаем счетчики у MAIN (если есть)
+    cursor.execute('''
+        UPDATE users_main SET
+            screenshots_total = CASE WHEN screenshots_total > 0 THEN screenshots_total - 1 ELSE 0 END,
+            screenshots_weekly = CASE WHEN screenshots_weekly > 0 THEN screenshots_weekly - 1 ELSE 0 END
+        WHERE user_id = ?
+    ''', (author.id,))
+
+    db.commit()
+
+    # Обновляем недельную статистику
+    await update_weekly_stats()
+    await update_weekly_stats_main()
+
+    # Можно отправить уведомление
+    try:
+        await message.channel.send(f"⚠️ Скриншот {author.mention} был удалён по реакции ❌", delete_after=10)
+    except:
+        pass
+
 
 # ========== ТАСКИ ==========
 @tasks.loop(hours=24)

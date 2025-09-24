@@ -935,15 +935,8 @@ async def on_reaction_add(reaction, user):
     if str(reaction.emoji) != ":x:":  # Или "x" если используете :x:
         return
     
-    try:
-        # Загружаем сообщение если нужно
-        if reaction.message.partial:
-            message = await reaction.message.fetch()
-        else:
-            message = reaction.message
-    except discord.NotFound:
-        return
 
+    message = reaction.message
     author = message.author  # Кто прислал скрин
 
     # Проверяем, что это пользователь с ролью TEST

@@ -64,7 +64,7 @@ def init_db():
     ''')
     
     cursor.execute('''
-        CREATE TABLE users_main (
+        CREATE TABLE IF NOT EXISTS users_main (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
         screenshots_total INTEGER DEFAULT 0,

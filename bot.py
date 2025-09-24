@@ -932,7 +932,7 @@ async def on_reaction_add(reaction, user):
         return
     if reaction.message.channel.id not in [CHANNEL_REPORTS_ID, CHANNEL_MAIN_ID]:
         return
-    if str(reaction.emoji) != "❌":  # Или "x" если используете :x:
+    if str(reaction.emoji) != ":x:":  # Или "x" если используете :x:
         return
     
     try:

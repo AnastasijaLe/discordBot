@@ -88,15 +88,15 @@ def init_db():
     ''')
     
     cursor.execute('''
+    DROP TABLE IF EXISTS weekly_stats;
+    ''')
+
+    cursor.execute('''
     CREATE TABLE IF NOT EXISTS weekly_stats (
         week_start TEXT PRIMARY KEY,
         message_id INTEGER,
         stats_type TEXT
     )
-    ''')
-    
-    cursor.execute('''
-    DROP TABLE IF EXISTS daily_stats;
     ''')
     
     db.commit()

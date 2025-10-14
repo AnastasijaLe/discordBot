@@ -18,13 +18,11 @@ import aiofiles
 TOKEN = os.environ.get('DISCORD_TOKEN')
 GUILD_ID = int(os.environ.get('GUILD_ID'))
 CHANNEL_APPROVAL_ID = int(os.environ.get('CHANNEL_APPROVAL_ID'))
-#CHANNEL_MAIN_ID = int(os.environ.get('CHANNEL_MAIN_ID'))
 CHANNEL_WEEKLY_STATS_ID = int(os.environ.get('CHANNEL_WEEKLY_STATS_ID'))
 ROLE_TEST_ID = int(os.environ.get('ROLE_TEST_ID'))
 ROLE_MAIN_ID = int(os.environ.get('ROLE_MAIN_ID'))
 ROLE_REC_ID = int(os.environ.get('ROLE_REC_ID'))
 ROLE_HIGH_ID = int(os.environ.get('ROLE_HIGH_ID'))
-#ROLE_TIR3_ID = int(os.environ.get('ROLE_TIR3_ID'))
 WEEKLY_STATS_MESSAGE_ID = int(os.environ.get('WEEKLY_STATS_MESSAGE_ID', 0))
 DEFAULT_THRESHOLD = int(os.environ.get('DEFAULT_THRESHOLD', 15))
 INACTIVE_DAYS_THRESHOLD = int(os.environ.get('INACTIVE_DAYS_THRESHOLD', 3))
@@ -85,10 +83,6 @@ def init_db():
         date TEXT,
         FOREIGN KEY (user_id) REFERENCES users (user_id)
     )
-    ''')
-    
-    cursor.execute('''
-    DROP TABLE IF EXISTS weekly_stats;
     ''')
 
     cursor.execute('''
@@ -280,66 +274,6 @@ async def generate_pdf(user_id: int, paths: list[str]) -> str:
         print("❌ Не удалось добавить ни одного изображения в PDF")
         return None
 
-# ========== ОБЪЕДИНЕННАЯ НЕДЕЛЬНАЯ СТАТИСТИКА ==========
-# ========== ОБНОВЛЕННАЯ НЕДЕЛЬНАЯ СТАТИСТИКА ==========
-async def initialize_weekly_stats():
-    """Инициализирует два фиксированных сообщения для статистики"""
-    channel = bot.get_channel(CHANNEL_WEEKLY_STATS_ID)
-    if not channel:
-        return None, None
-    
-    # Проверяем существующие сообщения в базе
-    cursor.execute("SELECT message_id, stats_type FROM weekly_stats")
-    existing_messages = cursor.fetchall()
-    
-    test_message_id = None
-    main_message_id = None
-    
-    for msg_id, stats_type in existing_messages:
-        try:
-            message = await channel.fetch_message(msg_id)
-            if stats_type == "TEST":
-                test_message_id = msg_id
-            elif stats_type == "MAIN":
-                main_message_id = msg_id
-        except discord.NotFound:
-            # Сообщение было удалено, продолжаем
-            continue
-    
-    # Создаем недостающие сообщения
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_start_str = week_start.isoformat()
-    
-    if not test_message_id:
-        test_embed = discord.Embed(
-            title=f"📈 Недельная статистика TEST (неделя с {week_start_str})",
-            description="*Статистика загружается...*",
-            color=discord.Color.gold()
-        )
-        test_message = await channel.send(embed=test_embed)
-        test_message_id = test_message.id
-        cursor.execute(
-            "INSERT INTO weekly_stats (week_start, message_id, stats_type) VALUES (?, ?, ?)",
-            (week_start_str, test_message_id, "TEST")
-        )
-    
-    if not main_message_id:
-        main_embed = discord.Embed(
-            title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})",
-            description="*Статистика загружается...*",
-            color=discord.Color.purple()
-        )
-        main_message = await channel.send(embed=main_embed)
-        main_message_id = main_message.id
-        cursor.execute(
-            "INSERT INTO weekly_stats (week_start, message_id, stats_type) VALUES (?, ?, ?)",
-            (week_start_str, main_message_id, "MAIN")
-        )
-    
-    db.commit()
-    return test_message_id, main_message_id
-
 # ========== ОБНОВЛЕННАЯ НЕДЕЛЬНАЯ СТАТИСТИКА ==========
 async def initialize_weekly_stats():
     """Инициализирует два фиксированных сообщения для статистики"""
@@ -510,32 +444,31 @@ async def update_weekly_stats():
     
     db.commit()
     
-    # Сортируем пользователей по количеству скриншотов
-    test_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
-    main_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
-    
-    # Создаем контент для сообщений
-    test_content = create_stats_content(test_users, "TEST")
-    main_content = create_stats_content(main_users, "MAIN")
+    # Создаем страницы для сообщений
+    test_pages = create_stats_pages(test_users, "TEST")
+    main_pages = create_stats_pages(main_users, "MAIN")
     
     # Обновляем сообщение TEST
-    if test_message_id:
+    if test_message_id and test_pages:
         try:
             test_message = await channel.fetch_message(test_message_id)
             test_embed = discord.Embed(
-                title=f"📈 Недельная статистика TEST (неделя с {week_start_str})",
-                description=test_content,
+                title=f"📈 Недельная статистика TEST (неделя с {week_start_str})" + (f" (стр. 1/{len(test_pages)})" if len(test_pages) > 1 else ""),
+                description=test_pages[0],  # Брать первую страницу, а не весь список
                 color=discord.Color.gold()
             )
-            await test_message.edit(embed=test_embed)
+            test_view = WeeklyStatsPaginator(test_pages, "TEST", test_message_id) if len(test_pages) > 1 else None
+            
+            await test_message.edit(embed=test_embed, view=test_view)
         except discord.NotFound:
             # Сообщение было удалено, создаем новое
             test_embed = discord.Embed(
-                title=f"📈 Недельная статистика TEST (неделя с {week_start_str})",
-                description=test_content,
+                title=f"📈 Недельная статистика TEST (неделя с {week_start_str})" + (f" (стр. 1/{len(test_pages)})" if len(test_pages) > 1 else ""),
+                description=test_pages[0],  # Брать первую страницу, а не весь список
                 color=discord.Color.gold()
             )
-            test_message = await channel.send(embed=test_embed)
+            test_view = WeeklyStatsPaginator(test_pages, "TEST") if len(test_pages) > 1 else None
+            test_message = await channel.send(embed=test_embed, view=test_view)
             test_message_id = test_message.id
             
             # Обновляем в базе
@@ -545,23 +478,26 @@ async def update_weekly_stats():
             )
     
     # Обновляем сообщение MAIN
-    if main_message_id:
+    if main_message_id and main_pages:
         try:
             main_message = await channel.fetch_message(main_message_id)
             main_embed = discord.Embed(
-                title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})",
-                description=main_content,
+                title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})" + (f" (стр. 1/{len(main_pages)})" if len(main_pages) > 1 else ""),
+                description=main_pages[0],  # Брать первую страницу, а не весь список
                 color=discord.Color.purple()
             )
-            await main_message.edit(embed=main_embed)
+            main_view = WeeklyStatsPaginator(main_pages, "MAIN", main_message_id) if len(main_pages) > 1 else None
+            
+            await main_message.edit(embed=main_embed, view=main_view)
         except discord.NotFound:
             # Сообщение было удалено, создаем новое
             main_embed = discord.Embed(
-                title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})",
-                description=main_content,
+                title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})" + (f" (стр. 1/{len(main_pages)})" if len(main_pages) > 1 else ""),
+                description=main_pages[0],  # Брать первую страницу, а не весь список
                 color=discord.Color.purple()
             )
-            main_message = await channel.send(embed=main_embed)
+            main_view = WeeklyStatsPaginator(main_pages, "MAIN") if len(main_pages) > 1 else None
+            main_message = await channel.send(embed=main_embed, view=main_view)
             main_message_id = main_message.id
             
             # Обновляем в базе
@@ -572,10 +508,13 @@ async def update_weekly_stats():
     
     db.commit()
 
-def create_stats_content(users, stats_type):
-    """Создает содержимое для статистики с зонами активности"""
+def create_stats_pages(users, stats_type):
+    """Создает страницы статистики с зонами активности"""
     if not users:
-        return "Нет пользователей с этой ролью"
+        return ["Нет пользователей с этой ролью"]
+    
+    # Сортируем сначала по скриншотам (по убыванию), потом по дням в Discord (по убыванию)
+    users.sort(key=lambda x: (-x['screens_weekly'], -x['days_in_discord']))
     
     # Разделяем на зоны
     if stats_type == "TEST":
@@ -588,34 +527,81 @@ def create_stats_content(users, stats_type):
         red_zone = [u for u in users if u['screens_weekly'] < 3]
     
     # Формируем текст
-    content = ""
+    full_text = ""
     
     if green_zone:
-        content += "🟢 **Активные:**\n" + "\n".join(
+        full_text += "🟢 **Активные:**\n" + "\n".join(
             f"✅ <@{u['id']}>: {u['screens_weekly']} скринов (в Discord: {u['days_in_discord']}д)"
             for u in green_zone
         ) + "\n\n"
     
     if yellow_zone:
-        content += "🟡 **Средний актив:**\n" + "\n".join(
+        full_text += "🟡 **Средний актив:**\n" + "\n".join(
             f"⚠️ <@{u['id']}>: {u['screens_weekly']} скринов (в Discord: {u['days_in_discord']}д)"
             for u in yellow_zone
         ) + "\n\n"
     
     if red_zone:
-        content += "🔴 **Маленький актив:**\n" + "\n".join(
+        full_text += "🔴 **Маленький актив:**\n" + "\n".join(
             f"❌ <@{u['id']}>: {u['screens_weekly']} скринов (в Discord: {u['days_in_discord']}д)"
             for u in red_zone
         )
     
-    if not content.strip():
-        content = "Нет данных для отображения"
+    if not full_text.strip():
+        return ["Нет данных для отображения"]
     
-    # Если контент слишком длинный, обрезаем
-    if len(content) > 4000:
-        content = content[:3990] + "\n... (сообщение слишком длинное)"
+    # Разбиваем на страницы
+    def chunk_text(text: str, limit: int = 4000) -> list[str]:
+        if len(text) <= limit:
+            return [text]
+        
+        chunks = []
+        while len(text) > limit:
+            split_index = text.rfind("\n", 0, limit)
+            if split_index == -1:
+                split_index = limit
+            chunks.append(text[:split_index])
+            text = text[split_index:].lstrip("\n")
+        if text.strip():
+            chunks.append(text)
+        return chunks
     
-    return content
+    return chunk_text(full_text)
+
+class WeeklyStatsPaginator(discord.ui.View):
+    def __init__(self, pages, stats_type, message_id=None):
+        super().__init__(timeout=None)
+        self.pages = pages
+        self.stats_type = stats_type
+        self.current_page = 0
+        self.message_id = message_id
+    
+    async def update_embed(self, interaction):
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        
+        embed = discord.Embed(
+            title=f"📈 Недельная статистика {self.stats_type} (неделя с {week_start.isoformat()}) (стр. {self.current_page + 1}/{len(self.pages)})",
+            description=self.pages[self.current_page],
+            color=discord.Color.gold() if self.stats_type == "TEST" else discord.Color.purple()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+            await self.update_embed(interaction)
+        else:
+            await interaction.response.defer()
+    
+    @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < len(self.pages) - 1:
+            self.current_page += 1
+            await self.update_embed(interaction)
+        else:
+            await interaction.response.defer()
 
 # ========== НАПОМИНАНИЯ О НЕАКТИВНОСТИ ДЛЯ TEST ==========
 async def check_inactive_users():
@@ -1165,21 +1151,24 @@ async def handle_totals_command(message, role_type="TEST"):
                     days_in_discord = (date.today() - datetime.strptime(discord_join_date, "%Y-%m-%d").date()).days if discord_join_date else 0
                 except ValueError:
                     days_in_discord = 0
-                lines.append(f"{member.mention}: {total} скринов ({days_in_discord} дней в Discord)")
+                lines.append({
+                    'mention': member.mention,
+                    'total': total,
+                    'days_in_discord': days_in_discord
+                })
     
     if not lines:
         return await message.channel.send(f"Нет данных о пользователях с ролью {title}.", delete_after=10)
     
-    def sort_key(line):
-        import re
-        match = re.search(r': (\d+) скринов', line)
-        return int(match.group(1)) if match else 0
+    # Сортируем сначала по общему количеству скринов (по убыванию), потом по дням в Discord (по убыванию)
+    lines.sort(key=lambda x: (-x['total'], -x['days_in_discord']))
     
-    lines.sort(key=sort_key, reverse=True)
+    # Форматируем строки после сортировки
+    formatted_lines = [f"{line['mention']}: {line['total']} скринов ({line['days_in_discord']} дней в Discord)" for line in lines]
     
     pages = []
     current_page = ""
-    for line in lines:
+    for line in formatted_lines:
         if len(current_page) + len(line) + 1 > 4000:
             pages.append(current_page)
             current_page = ""

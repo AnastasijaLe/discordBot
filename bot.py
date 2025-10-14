@@ -18,14 +18,13 @@ import aiofiles
 TOKEN = os.environ.get('DISCORD_TOKEN')
 GUILD_ID = int(os.environ.get('GUILD_ID'))
 CHANNEL_APPROVAL_ID = int(os.environ.get('CHANNEL_APPROVAL_ID'))
-CHANNEL_MAIN_ID = int(os.environ.get('CHANNEL_MAIN_ID'))
+#CHANNEL_MAIN_ID = int(os.environ.get('CHANNEL_MAIN_ID'))
 CHANNEL_WEEKLY_STATS_ID = int(os.environ.get('CHANNEL_WEEKLY_STATS_ID'))
-CHANNEL_WEEKLY_STATS_MAIN_ID = int(os.environ.get('CHANNEL_WEEKLY_STATS_MAIN_ID'))
 ROLE_TEST_ID = int(os.environ.get('ROLE_TEST_ID'))
 ROLE_MAIN_ID = int(os.environ.get('ROLE_MAIN_ID'))
 ROLE_REC_ID = int(os.environ.get('ROLE_REC_ID'))
 ROLE_HIGH_ID = int(os.environ.get('ROLE_HIGH_ID'))
-ROLE_TIR3_ID = int(os.environ.get('ROLE_TIR3_ID'))
+#ROLE_TIR3_ID = int(os.environ.get('ROLE_TIR3_ID'))
 WEEKLY_STATS_MESSAGE_ID = int(os.environ.get('WEEKLY_STATS_MESSAGE_ID', 0))
 DEFAULT_THRESHOLD = int(os.environ.get('DEFAULT_THRESHOLD', 15))
 INACTIVE_DAYS_THRESHOLD = int(os.environ.get('INACTIVE_DAYS_THRESHOLD', 3))
@@ -91,14 +90,8 @@ def init_db():
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS weekly_stats (
         week_start TEXT PRIMARY KEY,
-        message_id INTEGER
-    )
-    ''')
-    
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS weekly_stats_main (
-        week_start TEXT PRIMARY KEY,
-        message_id INTEGER
+        message_id INTEGER,
+        stats_type TEXT
     )
     ''')
     
@@ -148,14 +141,14 @@ class ApprovalButtons(discord.ui.View):
         target_user = guild.get_member(self.target_user_id)
         role_test = guild.get_role(ROLE_TEST_ID)
         role_main = guild.get_role(ROLE_MAIN_ID)
-        role_tir3 = guild.get_role(ROLE_TIR3_ID)
+        #role_tir3 = guild.get_role(ROLE_TIR3_ID)
         
         if not target_user:
             return await interaction.response.send_message("Пользователь не найден.", ephemeral=True)
         
-        if role_main or role_tir3:
-            roles_to_add = [r for r in (role_main, role_tir3) if r]
-            await target_user.add_roles(*roles_to_add)
+        # Только роль MAIN, TIR3 больше не выдаем автоматически
+        if role_main:
+            await target_user.add_roles(role_main)
         if role_test:
             await target_user.remove_roles(role_test)
         
@@ -178,7 +171,6 @@ class ApprovalButtons(discord.ui.View):
         await interaction.message.edit(view=None, embed=embed)
         await interaction.response.send_message(f"Игрок {target_user.mention} успешно переведен!", ephemeral=True)
         await update_weekly_stats()
-        await update_weekly_stats_main()
 
     @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.danger, custom_id="approve_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -288,7 +280,7 @@ async def generate_pdf(user_id: int, paths: list[str]) -> str:
         print("❌ Не удалось добавить ни одного изображения в PDF")
         return None
 
-# ========== НЕДЕЛЬНАЯ СТАТИСТИКА ДЛЯ TEST ==========
+# ========== ОБЪЕДИНЕННАЯ НЕДЕЛЬНАЯ СТАТИСТИКА ==========
 async def update_weekly_stats():
     channel = bot.get_channel(CHANNEL_WEEKLY_STATS_ID)
     if not channel:
@@ -300,8 +292,10 @@ async def update_weekly_stats():
     
     guild = bot.get_guild(GUILD_ID)
     role_test = guild.get_role(ROLE_TEST_ID)
-    test_users = []
+    role_main = guild.get_role(ROLE_MAIN_ID)
     
+    # Собираем статистику для TEST
+    test_users = []
     for member in guild.members:
         if role_test in member.roles:
             cursor.execute(
@@ -342,91 +336,8 @@ async def update_weekly_stats():
                 'days_in_faction': days_in_faction
             })
     
-    db.commit()
-    test_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
-    
-    embed = discord.Embed(
-        title=f"📈 Недельная статистика TEST (неделя с {week_start_str})",
-        color=discord.Color.gold()
-    )
-    
-    def chunk_text(text: str, limit: int = 1024) -> list[str]:
-        chunks = []
-        while len(text) > limit:
-            split_index = text.rfind("\n", 0, limit)
-            if split_index == -1:
-                split_index = limit
-            chunks.append(text[:split_index])
-            text = text[split_index:].lstrip("\n")
-        if text:
-            chunks.append(text)
-        return chunks
-    
-    def add_zone_fields(zone_name, users, emoji):
-        if not users:
-            return
-        full_text = "\n".join(
-            f"{emoji} <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})"
-            for u in users
-        )
-        for i, chunk in enumerate(chunk_text(full_text)):
-            name = zone_name if i == 0 else f"{zone_name} (продолжение {i})"
-            embed.add_field(name=name, value=chunk, inline=False)
-    
-    green_zone = [u for u in test_users if u['screens_weekly'] >= 10]
-    yellow_zone = [u for u in test_users if 5 <= u['screens_weekly'] < 10]
-    red_zone = [u for u in test_users if u['screens_weekly'] < 5]
-    
-    add_zone_fields("🟢 Активные", green_zone, "✅")
-    add_zone_fields("🟡 Средний актив", yellow_zone, "⚠️")
-    add_zone_fields("🔴 Маленький актив", red_zone, "❌")
-    
-    cursor.execute("SELECT message_id FROM weekly_stats WHERE week_start = ?", (week_start_str,))
-    row = cursor.fetchone()
-    
-    if row and row[0]:
-        try:
-            message = await channel.fetch_message(row[0])
-            await message.edit(embed=embed)
-        except:
-            message = await channel.send(embed=embed)
-            cursor.execute("UPDATE weekly_stats SET message_id = ? WHERE week_start = ?", (message.id, week_start_str))
-    else:
-        message = await channel.send(embed=embed)
-        cursor.execute(
-            "INSERT OR REPLACE INTO weekly_stats (week_start, message_id) VALUES (?, ?)",
-            (week_start_str, message.id)
-        )
-    
-    db.commit()
-    
-    cursor.execute("SELECT week_start, message_id FROM weekly_stats ORDER BY week_start DESC")
-    all_rows = cursor.fetchall()
-    
-    if len(all_rows) > 2:
-        for old_week, old_message_id in all_rows[2:]:
-            try:
-                old_msg = await channel.fetch_message(old_message_id)
-                await old_msg.delete()
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                print(f"⚠️ Не удалось удалить старое недельное сообщение {old_message_id}: {e}")
-
-# ========== НЕДЕЛЬНАЯ СТАТИСТИКА ДЛЯ MAIN ==========
-async def update_weekly_stats_main():
-    channel = bot.get_channel(CHANNEL_WEEKLY_STATS_MAIN_ID)
-    if not channel:
-        return
-    
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_start_str = week_start.isoformat()
-    
-    guild = bot.get_guild(GUILD_ID)
-    role_main = guild.get_role(ROLE_MAIN_ID)
+    # Собираем статистику для MAIN
     main_users = []
-    
     for member in guild.members:
         if role_main in member.roles:
             cursor.execute(
@@ -458,11 +369,107 @@ async def update_weekly_stats_main():
             })
     
     db.commit()
+    
+    # Сортируем пользователей
+    test_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
     main_users.sort(key=lambda x: x['screens_weekly'], reverse=True)
     
-    full_text = "\n".join(f"🔹 <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})" for u in main_users)
+    # Создаем сообщения для TEST и MAIN
+    test_pages = create_stats_pages(test_users, "TEST")
+    main_pages = create_stats_pages(main_users, "MAIN")
     
+    # УДАЛЯЕМ ВСЕ СТАРЫЕ СООБЩЕНИЯ СТАТИСТИКИ
+    cursor.execute("SELECT message_id FROM weekly_stats")
+    all_message_ids = cursor.fetchall()
+    
+    for message_id_row in all_message_ids:
+        try:
+            old_msg = await channel.fetch_message(message_id_row[0])
+            await old_msg.delete()
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            print(f"⚠️ Не удалось удалить старое сообщение статистики {message_id_row[0]}: {e}")
+    
+    # Очищаем таблицу weekly_stats
+    cursor.execute("DELETE FROM weekly_stats")
+    
+    # Создаем новые сообщения для TEST
+    if test_pages:
+        test_embed = discord.Embed(
+            title=f"📈 Недельная статистика TEST (неделя с {week_start_str})" + (f" (стр. 1/{len(test_pages)})" if len(test_pages) > 1 else ""),
+            description=test_pages[0],
+            color=discord.Color.gold()
+        )
+        test_view = WeeklyStatsPaginator(test_pages, "TEST") if len(test_pages) > 1 else None
+        
+        test_message = await channel.send(embed=test_embed, view=test_view)
+        cursor.execute(
+            "INSERT INTO weekly_stats (week_start, message_id, stats_type) VALUES (?, ?, ?)",
+            (week_start_str, test_message.id, "TEST")
+        )
+    
+    # Создаем новые сообщения для MAIN
+    if main_pages:
+        main_embed = discord.Embed(
+            title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})" + (f" (стр. 1/{len(main_pages)})" if len(main_pages) > 1 else ""),
+            description=main_pages[0],
+            color=discord.Color.purple()
+        )
+        main_view = WeeklyStatsPaginator(main_pages, "MAIN") if len(main_pages) > 1 else None
+        
+        main_message = await channel.send(embed=main_embed, view=main_view)
+        cursor.execute(
+            "INSERT INTO weekly_stats (week_start, message_id, stats_type) VALUES (?, ?, ?)",
+            (week_start_str, main_message.id, "MAIN")
+        )
+    
+    db.commit()
+
+def create_stats_pages(users, stats_type):
+    """Создает страницы статистики с зонами активности"""
+    if not users:
+        return ["Нет данных"]
+    
+    # Сортируем по количеству скриншотов
+    users.sort(key=lambda x: x['screens_weekly'], reverse=True)
+    
+    # Разделяем на зоны
+    if stats_type == "TEST":
+        green_zone = [u for u in users if u['screens_weekly'] >= 10]
+        yellow_zone = [u for u in users if 5 <= u['screens_weekly'] < 10]
+        red_zone = [u for u in users if u['screens_weekly'] < 5]
+    else:  # MAIN
+        green_zone = [u for u in users if u['screens_weekly'] >= 7]
+        yellow_zone = [u for u in users if 3 <= u['screens_weekly'] < 7]
+        red_zone = [u for u in users if u['screens_weekly'] < 3]
+    
+    # Формируем текст
+    full_text = ""
+    
+    if green_zone:
+        full_text += "🟢 **Активные:**\n" + "\n".join(
+            f"✅ <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})"
+            for u in green_zone
+        ) + "\n\n"
+    
+    if yellow_zone:
+        full_text += "🟡 **Средний актив:**\n" + "\n".join(
+            f"⚠️ <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})"
+            for u in yellow_zone
+        ) + "\n\n"
+    
+    if red_zone:
+        full_text += "🔴 **Маленький актив:**\n" + "\n".join(
+            f"❌ <@{u['id']}>: {u['screens_weekly']} скринов (дней в Discord: {u['days_in_discord']})"
+            for u in red_zone
+        )
+    
+    # Разбиваем на страницы
     def chunk_text(text: str, limit: int = 4000) -> list[str]:
+        if len(text) <= limit:
+            return [text] if text.strip() else ["Нет данных"]
+        
         chunks = []
         while len(text) > limit:
             split_index = text.rfind("\n", 0, limit)
@@ -470,56 +477,27 @@ async def update_weekly_stats_main():
                 split_index = limit
             chunks.append(text[:split_index])
             text = text[split_index:].lstrip("\n")
-        if text:
+        if text.strip():
             chunks.append(text)
         return chunks
     
-    pages = chunk_text(full_text)
-    
-    cursor.execute("SELECT message_id FROM weekly_stats_main WHERE week_start = ?", (week_start_str,))
-    row = cursor.fetchone()
-    if row and row[0]:
-        try:
-            old_message = await channel.fetch_message(row[0])
-            await old_message.delete()
-        except:
-            pass
-    
-    if pages:
-        embed = discord.Embed(
-            title=f"📈 Недельная статистика MAIN (неделя с {week_start_str})" + (f" (стр. 1/{len(pages)})" if len(pages) > 1 else ""),
-            description=pages[0],
-            color=discord.Color.purple()
-        )
-        view = WeeklyStatsPaginator(pages) if len(pages) > 1 else None
-        message = await channel.send(embed=embed, view=view)
-        cursor.execute("INSERT OR REPLACE INTO weekly_stats_main (week_start, message_id) VALUES (?, ?)", (week_start_str, message.id))
-        db.commit()
-    
-    cursor.execute("SELECT week_start, message_id FROM weekly_stats_main ORDER BY week_start DESC")
-    all_rows = cursor.fetchall()
-    
-    if len(all_rows) > 2:
-        for old_week, old_message_id in all_rows[2:]:
-            try:
-                old_msg = await channel.fetch_message(old_message_id)
-                await old_msg.delete()
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                print(f"⚠️ Не удалось удалить старое недельное сообщение MAIN {old_message_id}: {e}")
+    return chunk_text(full_text)
 
 class WeeklyStatsPaginator(discord.ui.View):
-    def __init__(self, pages):
+    def __init__(self, pages, stats_type):
         super().__init__(timeout=None)
         self.pages = pages
+        self.stats_type = stats_type
         self.current_page = 0
     
     async def update_embed(self, interaction):
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        
         embed = discord.Embed(
-            title=f"📈 Недельная статистика MAIN (неделя с {(date.today() - timedelta(days=date.today().weekday())).isoformat()}) (стр. {self.current_page + 1}/{len(self.pages)})",
+            title=f"📈 Недельная статистика {self.stats_type} (неделя с {week_start.isoformat()}) (стр. {self.current_page + 1}/{len(self.pages)})",
             description=self.pages[self.current_page],
-            color=discord.Color.purple()
+            color=discord.Color.gold() if self.stats_type == "TEST" else discord.Color.purple()
         )
         await interaction.response.edit_message(embed=embed, view=self)
     
@@ -570,14 +548,14 @@ async def check_inactive_users():
                 custom_message = (
                     f"⚠️ **Напоминание**\n"
                     f"Вы не отправляли скриншоты уже {days_inactive} дней.\n"
-                    f"Пожалуйста, отправьте скриншоты в канал для отчётов, чтобы избежать исключения."
+                    f"Пожалуйста, отправьте скриншоты в канал <#{CHANNEL_REPORTS_ID}>, чтобы избежать исключения."
                 )
         else:
             should_send_reminder = True
             custom_message = (
                 f"⚠️ **Напоминание**\n"
-                f"Вы ещё не отправили ни одного скриншота на повышение в канал <#{CHANNEL_REPORTS_ID}>.\n"
-                f"Пожалуйста, не забывайте о повышении, чтобы избежать проблем!"
+                f"Вы ещё не отправили ни одного скриншота в канал <#{CHANNEL_REPORTS_ID}>.\n"
+                f"Пожалуйста, не забывайте об активности, чтобы избежать проблем!"
             )
         
         if last_reminder_date_str:
@@ -630,13 +608,13 @@ async def check_inactive_users_main():
                 custom_message = (
                     f"⚠️ **Напоминание**\n"
                     f"Вы не отправляли скриншоты уже {days_inactive} дней.\n"
-                    f"Пожалуйста, отправьте скриншоты в канал для отчётов, чтобы поддерживать активность."
+                    f"Пожалуйста, отправьте скриншоты в канал <#{CHANNEL_REPORTS_ID}>, чтобы поддерживать активность."
                 )
         else:
             should_send_reminder = True
             custom_message = (
                 f"⚠️ **Напоминание**\n"
-                f"Вы ещё не отправили ни одного скриншота в канал <#{CHANNEL_MAIN_ID}>.\n"
+                f"Вы ещё не отправили ни одного скриншота в канал <#{CHANNEL_REPORTS_ID}>n"
                 f"Пожалуйста, отправляйте скриншоты для поддержания активности!"
             )
         
@@ -667,7 +645,6 @@ async def on_ready():
     weekly_tasks.start()
     inactive_check.start()
     await update_weekly_stats()
-    await update_weekly_stats_main()
 
 async def initialize_discord_join_dates():
     guild = bot.get_guild(GUILD_ID)
@@ -728,12 +705,12 @@ async def on_member_update(before, after):
             (after.id, after.name, join_date, discord_join_date)
         )
         db.commit()
-        await update_weekly_stats_main()
+        await update_weekly_stats()
     
     if role_main in before.roles and role_main not in after.roles:
         cursor.execute("DELETE FROM users_main WHERE user_id = ?", (after.id,))
         db.commit()
-        await update_weekly_stats_main()
+        await update_weekly_stats()
 
 @bot.event
 async def on_member_remove(member):
@@ -749,7 +726,7 @@ async def on_member_remove(member):
     if role_main in member.roles:
         cursor.execute("DELETE FROM users_main WHERE user_id = ?", (member.id,))
         db.commit()
-        await update_weekly_stats_main()
+        await update_weekly_stats()
 
 @bot.event
 async def on_message(message):
@@ -758,11 +735,10 @@ async def on_message(message):
     
     if message.content.lower() in ["!статистика", "!stats"] and message.channel.permissions_for(message.author).administrator:
         await update_weekly_stats()
-        await update_weekly_stats_main()
         await message.channel.send("✅ Статистика обновлена!", delete_after=10)
         return
     
-    if message.content.lower() in ["!totals", "!статистика_всех"]:
+    if message.content.lower() in ["!totals_test", "!статистика_всех"]:
         await handle_totals_command(message, role_type="TEST")
         return
     
@@ -775,7 +751,8 @@ async def on_message(message):
         await message.channel.send("✅ Даты вступления в Discord обновлены!", delete_after=10)
         return
     
-    if message.channel.id in [CHANNEL_REPORTS_ID, CHANNEL_MAIN_ID]:
+    # Обработка скриншотов в одном канале с проверкой роли
+    if message.channel.id == CHANNEL_REPORTS_ID:
         await handle_screenshots(message)
 
 async def handle_screenshots(message):
@@ -794,7 +771,9 @@ async def handle_screenshots(message):
     if screenshot_count == 0:
         return
     
-    if role_test in message.author.roles and message.channel.id == CHANNEL_REPORTS_ID:
+    # Проверяем роль пользователя и обрабатываем соответственно
+    if role_test in message.author.roles:
+        # Обработка для TEST (с отчетом)
         cursor.execute(
             "INSERT OR IGNORE INTO users (user_id, username, discord_join_date) VALUES (?, ?, ?)",
             (user_id, username, discord_join_date)
@@ -841,7 +820,8 @@ async def handle_screenshots(message):
                 paths = [row[0] for row in cursor.fetchall()]
                 asyncio.create_task(process_approval_request(message.author, total, user_id, paths))
     
-    elif role_main in message.author.roles and message.channel.id == CHANNEL_MAIN_ID:
+    elif role_main in message.author.roles:
+        # Обработка для MAIN (без отчета)
         cursor.execute(
             "INSERT OR IGNORE INTO users_main (user_id, username, discord_join_date) VALUES (?, ?, ?)",
             (user_id, username, discord_join_date)
@@ -872,7 +852,6 @@ async def handle_screenshots(message):
     
     db.commit()
     await update_weekly_stats()
-    await update_weekly_stats_main()
 
 async def process_approval_request(user, total_screens, user_id, paths):
     try:
@@ -930,22 +909,21 @@ async def on_reaction_add(reaction, user):
     # Игнорируем реакции бота
     if user.bot:
         return
-    if reaction.message.channel.id not in [CHANNEL_REPORTS_ID, CHANNEL_MAIN_ID]:
+    if reaction.message.channel.id != CHANNEL_REPORTS_ID:
         return
-    if str(reaction.emoji) != ":x:":  # Или "x" если используете :x:
+    if str(reaction.emoji) != "❌":
         return
     
-
     message = reaction.message
-    author = message.author  # Кто прислал скрин
+    author = message.author
 
-    # Проверяем, что это пользователь с ролью TEST
+    # Проверяем, что это пользователь с ролью TEST или MAIN
     guild = message.guild
     role_test = guild.get_role(ROLE_TEST_ID)
     role_main = guild.get_role(ROLE_MAIN_ID)
 
     member = guild.get_member(author.id)
-    if not member or role_test not in member.roles:
+    if not member or (role_test not in member.roles and role_main not in member.roles):
         return
 
     # Ищем скриншот в базе по message_id
@@ -966,33 +944,33 @@ async def on_reaction_add(reaction, user):
     cursor.execute("DELETE FROM screenshots WHERE message_id = ?", (message.id,))
 
     # Уменьшаем счетчики у TEST
-    cursor.execute('''
-        UPDATE users SET
-            screenshots_total = CASE WHEN screenshots_total > 0 THEN screenshots_total - 1 ELSE 0 END,
-            screenshots_weekly = CASE WHEN screenshots_weekly > 0 THEN screenshots_weekly - 1 ELSE 0 END
-        WHERE user_id = ?
-    ''', (author.id,))
+    if role_test in member.roles:
+        cursor.execute('''
+            UPDATE users SET
+                screenshots_total = CASE WHEN screenshots_total > 0 THEN screenshots_total - 1 ELSE 0 END,
+                screenshots_weekly = CASE WHEN screenshots_weekly > 0 THEN screenshots_weekly - 1 ELSE 0 END
+            WHERE user_id = ?
+        ''', (author.id,))
 
-    # Уменьшаем счетчики у MAIN (если есть)
-    cursor.execute('''
-        UPDATE users_main SET
-            screenshots_total = CASE WHEN screenshots_total > 0 THEN screenshots_total - 1 ELSE 0 END,
-            screenshots_weekly = CASE WHEN screenshots_weekly > 0 THEN screenshots_weekly - 1 ELSE 0 END
-        WHERE user_id = ?
-    ''', (author.id,))
+    # Уменьшаем счетчики у MAIN
+    if role_main in member.roles:
+        cursor.execute('''
+            UPDATE users_main SET
+                screenshots_total = CASE WHEN screenshots_total > 0 THEN screenshots_total - 1 ELSE 0 END,
+                screenshots_weekly = CASE WHEN screenshots_weekly > 0 THEN screenshots_weekly - 1 ELSE 0 END
+            WHERE user_id = ?
+        ''', (author.id,))
 
     db.commit()
 
     # Обновляем недельную статистику
     await update_weekly_stats()
-    await update_weekly_stats_main()
 
     # Можно отправить уведомление
     try:
         await message.channel.send(f"⚠️ Скриншот {author.mention} был удалён по реакции ❌", delete_after=10)
     except:
         pass
-
 
 # ========== ТАСКИ ==========
 @tasks.loop(hours=24)
@@ -1021,7 +999,6 @@ async def weekly_tasks():
     
     db.commit()
     await update_weekly_stats()
-    await update_weekly_stats_main()
 
 @tasks.loop(hours=12)
 async def inactive_check():
@@ -1109,25 +1086,26 @@ async def handle_totals_command(message, role_type="TEST"):
     if current_page:
         pages.append(current_page)
     
-    view = TotalsPaginator(pages)
+    view = TotalsPaginator(pages, title)
     embed = discord.Embed(
-        title=f"📊 Статистика пользователей с ролью {title} (стр. 1/{len(pages)})",
+        title=f"📊 Общая статистика {title} (стр. 1/{len(pages)})",
         description=pages[0],
-        color=discord.Color.blue()
+        color=discord.Color.gold() if role_type == "TEST" else discord.Color.purple()
     )
     await message.channel.send(embed=embed, view=view, delete_after=120)
 
 class TotalsPaginator(discord.ui.View):
-    def __init__(self, pages):
+    def __init__(self, pages, stats_type):
         super().__init__(timeout=120)
         self.pages = pages
         self.current_page = 0
+        self.stats_type = stats_type
     
     async def update_message(self, interaction):
         embed = discord.Embed(
-            title=f"📊 Общая статистика (стр. {self.current_page + 1}/{len(self.pages)}) — листай ⬅️➡️",
+            title=f"📊 Общая статистика {self.stats_type} (стр. {self.current_page + 1}/{len(self.pages)})",
             description=self.pages[self.current_page],
-            color=discord.Color.blue()
+            color=discord.Color.gold() if self.stats_type == "TEST" else discord.Color.purple()
         )
         await interaction.response.edit_message(embed=embed, view=self)
     
@@ -1162,7 +1140,6 @@ async def delete_user_command(ctx, member: discord.Member):
     
     db.commit()
     await update_weekly_stats()
-    await update_weekly_stats_main()
     await ctx.send(f"✅ Данные пользователя {member.mention} удалены из базы.")
 
 # ========== СТАРТ ==========
